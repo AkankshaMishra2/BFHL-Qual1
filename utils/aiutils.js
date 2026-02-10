@@ -1,23 +1,36 @@
 const axios = require("axios");
 
 exports.getAIResponse = async (question) => {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  if (!process.env.GROK_API_KEY) {
+    throw new Error("GROK_API_KEY not set in environment");
+  }
+
+  const url = "https://api.groq.com/openai/v1/chat/completions";
+  const promptText = `Answer with a single word (the name only), no explanation: ${question}`;
 
   try {
-    const response = await axios.post(url, {
-      contents: [{ 
-        parts: [{ text: question }] 
-      }],
-      generationConfig: {
-          // maxOutputTokens: 10, // Removed limit on output tokens
-        temperature: 0.7
+    const response = await axios.post(
+      url,
+      {
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "user", content: promptText }
+        ],
+        max_tokens: 32,
+        temperature: 0.0
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROK_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
-    });
+    );
 
-    const raw = response.data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const raw = response.data?.choices?.[0]?.message?.content || "";
 
     if (!raw) {
-      throw new Error("No response from Gemini API");
+      throw new Error("No response from Grok/OpenAI API");
     }
 
     const normalize = (s) => {
@@ -29,27 +42,33 @@ exports.getAIResponse = async (question) => {
       t = t.replace(/\*(.*?)\*/g, "$1");
       // Remove HTML tags
       t = t.replace(/<[^>]+>/g, "");
-      // Normalize whitespace
+      // Normalize whitespace and trim punctuation
       t = t.replace(/\s+/g, " ").trim();
+      t = t.replace(/^[:\-\s]+|[.\n\r]+$/g, "");
 
-      // Patterns to extract concise answer
-      let m = t.match(/(?:Answer|A)[:\-]\s*(.+?)(?:[.\n]|$)/i);
-      if (m && m[1]) return m[1].trim().replace(/[.\n\r]+$/g, "");
+      // Extract single-word / concise answers if possible
+      // 1) If line contains just a word or short phrase, return it
+      const single = t.match(/^([A-Za-z0-9\s'\-,&]+)$/);
+      if (single) return single[1].trim();
 
+      // 2) Look for patterns like "Answer: X"
+      let m = t.match(/(?:Answer|A)[:\-]\s*(.+?)(?:$)/i);
+      if (m && m[1]) return m[1].trim();
+
+      // 3) Look for "is <Answer>"
       m = t.match(/\b(?:is|are)\s+([^\.\n]+)/i);
-      if (m && m[1]) return m[1].trim().replace(/[.\n\r]+$/g, "");
+      if (m && m[1]) return m[1].trim();
 
-      // Return first sentence
-      m = t.match(/^([^\.\n]+)[\.\n]?/);
+      // 4) Otherwise return first token/word
+      m = t.match(/^(\S+)/);
       if (m && m[1]) return m[1].trim();
 
       return t;
     };
 
-    const cleaned = normalize(raw);
-    return cleaned;
+    return normalize(raw);
   } catch (error) {
-    console.error("Gemini API Error:", error.response?.data || error.message);
+    console.error("Grok/OpenAI API Error:", error.response?.data || error.message);
     throw error;
   }
 };
